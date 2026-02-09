@@ -4,7 +4,13 @@
 #include "../pbbslib/random_shuffle.h"
 
 #include <cstring>
+#if __has_include(<papi.h>)
 #include <papi.h>
+#elif __has_include(<papi/papi.h>)
+#include <papi/papi.h>
+#else
+#error "PAPI header not found. Install development headers (e.g., libpapi-dev) or pass PAPI_CFLAGS with include path."
+#endif
 
 #include <vector>
 #include <algorithm>

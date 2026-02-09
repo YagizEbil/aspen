@@ -50,8 +50,14 @@ endif
 ALL= memory_footprint run_static_algorithm run_batch_updates run_simultaneous_updates_queries
 all: $(ALL)
 
+PAPI_CFLAGS ?= $(shell pkg-config --cflags papi 2>/dev/null)
+PAPI_LIBS ?= $(shell pkg-config --libs papi 2>/dev/null)
+ifeq ($(strip $(PAPI_LIBS)),)
+PAPI_LIBS = -lpapi
+endif
+
 run_batch_updates: tools/run_batch_updates.cpp
-	$(CC) $(CFLAGS) $(PFLAGS) -o $@ $< $(JEMALLOC) -lpapi
+	$(CC) $(CFLAGS) $(PFLAGS) $(PAPI_CFLAGS) -o $@ $< $(JEMALLOC) $(PAPI_LIBS)
 
 % : tools/%.cpp
 	$(CC) $(CFLAGS) $(PFLAGS) -o $@ $< $(JEMALLOC)
