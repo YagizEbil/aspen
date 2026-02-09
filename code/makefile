@@ -52,8 +52,9 @@ all: $(ALL)
 
 PAPI_CFLAGS ?= $(shell pkg-config --cflags papi 2>/dev/null)
 PAPI_LIBS ?= $(shell pkg-config --libs papi 2>/dev/null)
-ifeq ($(strip $(PAPI_LIBS)),)
-PAPI_LIBS = -lpapi
+
+ifeq ($(strip $(PAPI_CFLAGS) $(PAPI_LIBS)),)
+$(warning PAPI not found via pkg-config; building run_batch_updates without PAPI linkage. Set PAPI_CFLAGS/PAPI_LIBS to enable counters.)
 endif
 
 run_batch_updates: tools/run_batch_updates.cpp

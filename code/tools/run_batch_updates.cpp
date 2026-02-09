@@ -4,12 +4,16 @@
 #include "../pbbslib/random_shuffle.h"
 
 #include <cstring>
+#include <cstdint>
+#include <cerrno>
 #if __has_include(<papi.h>)
 #include <papi.h>
+#define ASPEN_HAVE_PAPI 1
 #elif __has_include(<papi/papi.h>)
 #include <papi/papi.h>
+#define ASPEN_HAVE_PAPI 1
 #else
-#error "PAPI header not found. Install development headers (e.g., libpapi-dev) or pass PAPI_CFLAGS with include path."
+#define ASPEN_HAVE_PAPI 0
 #endif
 
 #include <vector>
@@ -18,6 +22,14 @@
 #include <thread>
 #include <cmath>
 #include <limits>
+#include <sys/resource.h>
+#include <unistd.h>
+
+#if !ASPEN_HAVE_PAPI && defined(__linux__)
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#include <sys/syscall.h>
+#endif
 
 
 #include <iostream>
@@ -36,9 +48,81 @@ string counter_to_csv(long long value) {
   return (value == kCounterUnavailable) ? "NA" : to_string(value);
 }
 
+long long delta_or_na(long long end, long long start) {
+  if (end == kCounterUnavailable || start == kCounterUnavailable) {
+    return kCounterUnavailable;
+  }
+  return end - start;
+}
+
+struct SoftMetricsSnapshot {
+  long long minor_faults;
+  long long major_faults;
+  long long rss_kb;
+};
+
+long long read_current_rss_kb() {
+#if defined(__linux__)
+  std::ifstream statm("/proc/self/statm");
+  long long total_pages = 0;
+  long long resident_pages = 0;
+  if (statm >> total_pages >> resident_pages) {
+    long long page_kb = sysconf(_SC_PAGESIZE) / 1024;
+    return resident_pages * page_kb;
+  }
+#endif
+
+#if defined(RUSAGE_SELF)
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) == 0) {
+    return ru.ru_maxrss;
+  }
+#endif
+  return kCounterUnavailable;
+}
+
+SoftMetricsSnapshot capture_soft_metrics() {
+  SoftMetricsSnapshot snap = {kCounterUnavailable,
+                              kCounterUnavailable,
+                              read_current_rss_kb()};
+#if defined(RUSAGE_SELF)
+  struct rusage ru;
+  if (getrusage(RUSAGE_SELF, &ru) == 0) {
+    snap.minor_faults = ru.ru_minflt;
+    snap.major_faults = ru.ru_majflt;
+  }
+#endif
+  return snap;
+}
+
+void print_csv_header() {
+  cout << "Phase,Time,Cycles,Instructions,L1_Misses,L2_Misses,"
+          "MinorFaults,MajorFaults,RSS_KB_Delta" << endl;
+}
+
+void print_csv_row(const string& phase_name,
+                   double elapsed,
+                   long long cycles,
+                   long long instructions,
+                   long long l1_misses,
+                   long long l2_misses,
+                   long long minor_faults_delta,
+                   long long major_faults_delta,
+                   long long rss_kb_delta) {
+  cout << phase_name << "," << elapsed << "," << counter_to_csv(cycles) << ","
+       << counter_to_csv(instructions) << "," << counter_to_csv(l1_misses)
+       << "," << counter_to_csv(l2_misses) << ","
+       << counter_to_csv(minor_faults_delta) << ","
+       << counter_to_csv(major_faults_delta) << ","
+       << counter_to_csv(rss_kb_delta) << endl;
+}
+
 class PapiProfiler {
  public:
+#if ASPEN_HAVE_PAPI
   PapiProfiler() {
+    print_csv_header();
+
     int ret = PAPI_library_init(PAPI_VER_CURRENT);
     if (ret != PAPI_VER_CURRENT) {
       cerr << "[PAPI] Initialization failed";
@@ -48,7 +132,6 @@ class PapiProfiler {
         cerr << ": " << PAPI_strerror(ret);
       }
       cerr << ". Continuing with timing only." << endl;
-      cout << "Phase,Time,Cycles,Instructions,L1_Misses,L2_Misses" << endl;
       return;
     }
     papi_initialized_ = true;
@@ -57,7 +140,6 @@ class PapiProfiler {
     if (ret != PAPI_OK) {
       cerr << "[PAPI] Failed to create event set: " << PAPI_strerror(ret)
            << ". Continuing with timing only." << endl;
-      cout << "Phase,Time,Cycles,Instructions,L1_Misses,L2_Misses" << endl;
       return;
     }
     event_set_created_ = true;
@@ -73,8 +155,6 @@ class PapiProfiler {
     } else {
       counters_enabled_ = true;
     }
-
-    cout << "Phase,Time,Cycles,Instructions,L1_Misses,L2_Misses" << endl;
   }
 
   ~PapiProfiler() {
@@ -89,6 +169,7 @@ class PapiProfiler {
 
   void start() {
     start_time_ = std::chrono::steady_clock::now();
+    soft_start_ = capture_soft_metrics();
     if (!counters_enabled_) {
       return;
     }
@@ -148,9 +229,17 @@ class PapiProfiler {
       }
     }
 
-    cout << phase_name << "," << elapsed << "," << counter_to_csv(cycles) << ","
-         << counter_to_csv(instructions) << "," << counter_to_csv(l1_misses)
-         << "," << counter_to_csv(l2_misses) << endl;
+    SoftMetricsSnapshot soft_end = capture_soft_metrics();
+    print_csv_row(
+        phase_name,
+        elapsed,
+        cycles,
+        instructions,
+        l1_misses,
+        l2_misses,
+        delta_or_na(soft_end.minor_faults, soft_start_.minor_faults),
+        delta_or_na(soft_end.major_faults, soft_start_.major_faults),
+        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb));
   }
 
  private:
@@ -172,6 +261,176 @@ class PapiProfiler {
   int event_set_ = PAPI_NULL;
   std::vector<int> tracked_events_;
   std::chrono::steady_clock::time_point start_time_;
+  SoftMetricsSnapshot soft_start_ = {kCounterUnavailable,
+                                     kCounterUnavailable,
+                                     kCounterUnavailable};
+#else
+  PapiProfiler() {
+    print_csv_header();
+#if defined(__linux__) && defined(__NR_perf_event_open)
+    cycles_fd_ = open_counter(PERF_TYPE_HARDWARE,
+                              PERF_COUNT_HW_CPU_CYCLES,
+                              "cpu_cycles");
+    instructions_fd_ = open_counter(PERF_TYPE_HARDWARE,
+                                    PERF_COUNT_HW_INSTRUCTIONS,
+                                    "instructions");
+    l1_misses_fd_ = open_counter(
+        PERF_TYPE_HW_CACHE,
+        cache_miss_config(PERF_COUNT_HW_CACHE_L1D),
+        "l1_dcache_read_misses");
+    l2_misses_fd_ = open_counter(
+        PERF_TYPE_HW_CACHE,
+        cache_miss_config(PERF_COUNT_HW_CACHE_LL),
+        "llc_read_misses_proxy_for_l2");
+
+    if (l2_misses_fd_ != -1) {
+      cerr << "[Profiler] Using LLC read misses as L2_Misses proxy in "
+              "perf_event fallback." << endl;
+    }
+    if (cycles_fd_ == -1 &&
+        instructions_fd_ == -1 &&
+        l1_misses_fd_ == -1 &&
+        l2_misses_fd_ == -1) {
+      cerr << "[Profiler] perf_event counters unavailable. Using timing + "
+              "fault/RSS deltas." << endl;
+    }
+#else
+    cerr << "[Profiler] Built without PAPI and without Linux perf_event. "
+            "Using timing + fault/RSS deltas only." << endl;
+#endif
+  }
+
+  ~PapiProfiler() {
+#if defined(__linux__) && defined(__NR_perf_event_open)
+    close_counter(cycles_fd_);
+    close_counter(instructions_fd_);
+    close_counter(l1_misses_fd_);
+    close_counter(l2_misses_fd_);
+#endif
+  }
+
+  void start() {
+    start_time_ = std::chrono::steady_clock::now();
+    soft_start_ = capture_soft_metrics();
+#if defined(__linux__) && defined(__NR_perf_event_open)
+    reset_and_enable(cycles_fd_, "cpu_cycles");
+    reset_and_enable(instructions_fd_, "instructions");
+    reset_and_enable(l1_misses_fd_, "l1_dcache_read_misses");
+    reset_and_enable(l2_misses_fd_, "llc_read_misses_proxy_for_l2");
+#endif
+  }
+
+  void stop(const string& phase_name) {
+    double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      start_time_).count();
+
+    long long cycles = kCounterUnavailable;
+    long long instructions = kCounterUnavailable;
+    long long l1_misses = kCounterUnavailable;
+    long long l2_misses = kCounterUnavailable;
+
+#if defined(__linux__) && defined(__NR_perf_event_open)
+    cycles = disable_and_read(cycles_fd_, "cpu_cycles");
+    instructions = disable_and_read(instructions_fd_, "instructions");
+    l1_misses = disable_and_read(l1_misses_fd_, "l1_dcache_read_misses");
+    l2_misses = disable_and_read(l2_misses_fd_, "llc_read_misses_proxy_for_l2");
+#endif
+
+    SoftMetricsSnapshot soft_end = capture_soft_metrics();
+    print_csv_row(
+        phase_name,
+        elapsed,
+        cycles,
+        instructions,
+        l1_misses,
+        l2_misses,
+        delta_or_na(soft_end.minor_faults, soft_start_.minor_faults),
+        delta_or_na(soft_end.major_faults, soft_start_.major_faults),
+        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb));
+  }
+
+ private:
+#if defined(__linux__) && defined(__NR_perf_event_open)
+  static uint64_t cache_miss_config(uint64_t cache_id) {
+    return cache_id |
+           (static_cast<uint64_t>(PERF_COUNT_HW_CACHE_OP_READ) << 8) |
+           (static_cast<uint64_t>(PERF_COUNT_HW_CACHE_RESULT_MISS) << 16);
+  }
+
+  static int perf_event_open(struct perf_event_attr* pe) {
+    return static_cast<int>(syscall(__NR_perf_event_open, pe, 0, -1, -1, 0));
+  }
+
+  static void close_counter(int& fd) {
+    if (fd != -1) {
+      close(fd);
+      fd = -1;
+    }
+  }
+
+  int open_counter(uint32_t type, uint64_t config, const char* label) {
+    struct perf_event_attr pe;
+    memset(&pe, 0, sizeof(struct perf_event_attr));
+    pe.type = type;
+    pe.size = sizeof(struct perf_event_attr);
+    pe.config = config;
+    pe.disabled = 1;
+    pe.exclude_kernel = 1;
+    pe.exclude_hv = 1;
+    pe.inherit = 1;
+
+    int fd = perf_event_open(&pe);
+    if (fd == -1) {
+      cerr << "[perf_event] Failed to open " << label << ": "
+           << strerror(errno) << endl;
+    }
+    return fd;
+  }
+
+  void reset_and_enable(int& fd, const char* label) {
+    if (fd == -1) {
+      return;
+    }
+    if (ioctl(fd, PERF_EVENT_IOC_RESET, 0) == -1 ||
+        ioctl(fd, PERF_EVENT_IOC_ENABLE, 0) == -1) {
+      cerr << "[perf_event] Failed to start " << label << ": "
+           << strerror(errno) << ". Disabling this counter." << endl;
+      close_counter(fd);
+    }
+  }
+
+  long long disable_and_read(int fd, const char* label) {
+    if (fd == -1) {
+      return kCounterUnavailable;
+    }
+    if (ioctl(fd, PERF_EVENT_IOC_DISABLE, 0) == -1) {
+      cerr << "[perf_event] Failed to stop " << label << ": "
+           << strerror(errno) << endl;
+      return kCounterUnavailable;
+    }
+
+    long long value = 0;
+    ssize_t nread = read(fd, &value, sizeof(value));
+    if (nread != static_cast<ssize_t>(sizeof(value))) {
+      cerr << "[perf_event] Failed to read " << label << ": "
+           << strerror(errno) << endl;
+      return kCounterUnavailable;
+    }
+    return value;
+  }
+
+  int cycles_fd_ = -1;
+  int instructions_fd_ = -1;
+  int l1_misses_fd_ = -1;
+  int l2_misses_fd_ = -1;
+#endif
+
+  std::chrono::steady_clock::time_point start_time_;
+  SoftMetricsSnapshot soft_start_ = {kCounterUnavailable,
+                                     kCounterUnavailable,
+                                     kCounterUnavailable};
+#endif
 };
 
 }  // namespace
