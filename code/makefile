@@ -50,6 +50,9 @@ endif
 ALL= memory_footprint run_static_algorithm run_batch_updates run_simultaneous_updates_queries
 all: $(ALL)
 
+run_batch_updates: tools/run_batch_updates.cpp
+	$(CC) $(CFLAGS) $(PFLAGS) -o $@ $< $(JEMALLOC) -lpapi
+
 % : tools/%.cpp
 	$(CC) $(CFLAGS) $(PFLAGS) -o $@ $< $(JEMALLOC)
 
