@@ -97,7 +97,8 @@ SoftMetricsSnapshot capture_soft_metrics() {
 
 void print_csv_header() {
   cout << "Phase,Time,Cycles,Instructions,L1_Misses,L2_Misses,"
-          "MinorFaults,MajorFaults,RSS_KB_Delta" << endl;
+          "MinorFaults,MajorFaults,RSS_KB_Delta,"
+          "Op,BatchIndex,UpdateSize,SizeIndex,Trial" << endl;
 }
 
 void print_csv_row(const string& phase_name,
@@ -108,13 +109,20 @@ void print_csv_row(const string& phase_name,
                    long long l2_misses,
                    long long minor_faults_delta,
                    long long major_faults_delta,
-                   long long rss_kb_delta) {
+                   long long rss_kb_delta,
+                   const string& op,
+                   size_t batch_index,
+                   size_t update_size,
+                   size_t size_index,
+                   size_t trial_index) {
   cout << phase_name << "," << elapsed << "," << counter_to_csv(cycles) << ","
        << counter_to_csv(instructions) << "," << counter_to_csv(l1_misses)
        << "," << counter_to_csv(l2_misses) << ","
        << counter_to_csv(minor_faults_delta) << ","
        << counter_to_csv(major_faults_delta) << ","
-       << counter_to_csv(rss_kb_delta) << endl;
+       << counter_to_csv(rss_kb_delta) << ","
+       << op << "," << batch_index << "," << update_size << ","
+       << size_index << "," << trial_index << endl;
 }
 
 class PapiProfiler {
@@ -190,7 +198,12 @@ class PapiProfiler {
     }
   }
 
-  void stop(const string& phase_name) {
+  void stop(const string& phase_name,
+            const string& op,
+            size_t batch_index,
+            size_t update_size,
+            size_t size_index,
+            size_t trial_index) {
     double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       start_time_).count();
@@ -239,7 +252,12 @@ class PapiProfiler {
         l2_misses,
         delta_or_na(soft_end.minor_faults, soft_start_.minor_faults),
         delta_or_na(soft_end.major_faults, soft_start_.major_faults),
-        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb));
+        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb),
+        op,
+        batch_index,
+        update_size,
+        size_index,
+        trial_index);
   }
 
  private:
@@ -320,7 +338,12 @@ class PapiProfiler {
 #endif
   }
 
-  void stop(const string& phase_name) {
+  void stop(const string& phase_name,
+            const string& op,
+            size_t batch_index,
+            size_t update_size,
+            size_t size_index,
+            size_t trial_index) {
     double elapsed =
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                       start_time_).count();
@@ -347,7 +370,12 @@ class PapiProfiler {
         l2_misses,
         delta_or_na(soft_end.minor_faults, soft_start_.minor_faults),
         delta_or_na(soft_end.major_faults, soft_start_.major_faults),
-        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb));
+        delta_or_na(soft_end.rss_kb, soft_start_.rss_kb),
+        op,
+        batch_index,
+        update_size,
+        size_index,
+        trial_index);
   }
 
  private:
@@ -504,7 +532,12 @@ void parallel_updates(commandLine& P) {
         timer st; st.start();
         VG.insert_edges_batch(update_sizes[us], updates.begin(), false, true, nn, false);
         double batch_time = st.stop();
-        profiler.stop("Insert_Batch_" + to_string(i));
+        profiler.stop("Insert_Batch_" + to_string(i),
+                      "Insert",
+                      i,
+                      update_sizes[us],
+                      us,
+                      ts);
 
         // cout << "batch time = " << batch_time << endl;
         avg_insert += batch_time;
@@ -516,7 +549,12 @@ void parallel_updates(commandLine& P) {
         timer st; st.start();
         VG.delete_edges_batch(update_sizes[us], updates.begin(), false, true, nn, false);
         double batch_time = st.stop();
-        profiler.stop("Delete_Batch_" + to_string(i));
+        profiler.stop("Delete_Batch_" + to_string(i),
+                      "Delete",
+                      i,
+                      update_sizes[us],
+                      us,
+                      ts);
 
         // cout << "batch time = " << batch_time << endl;
         avg_delete += batch_time;
