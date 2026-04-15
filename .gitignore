@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Compiled binaries
+/code/memory_footprint
+/code/run_static_algorithm
+/code/run_batch_updates
+/code/run_simultaneous_updates_queries
+/code/snap_to_adj
+/code/rmat_to_adj
+/code/run_dynamic_cpu_benchmark
+/code/run_static_bfs_bench
+/code/tools/*.out
+
+# Large graph/data files
+/code/inputs/
+/code/data/
+*.adj
+
+# Documentation
+/md_files/
