@@ -8,6 +8,7 @@
 #include "../../pbbslib/merge_sort.h"
 #include "../../trees/pam.h"
 #include "tree_plus.h"
+#include "update_breakdown.h"
 
 #include <limits>
 
@@ -354,11 +355,14 @@ struct sym_immutable_graph_tree_plus {
     auto E_orig = pbbs::make_range(edges, edges + m);
     edge* E_alloc = nullptr;
     auto fl = run_seq ? pbbs::fl_sequential : pbbs::no_flag;
+
+    auto _bd_t0 = bd_now();  // breakdown: start of sort phase
     if (!sorted) {
       cout << "insert, nn = " << nn << endl;
       sort_updates(edges, m, nn);
     }
 
+    auto _bd_t1 = bd_now();  // breakdown: start of preprocess phase
     if (remove_dups) {
       // can perform combining here if desired
       auto bool_seq = pbbs::delayed_seq<bool>(E_orig.size(), [&] (size_t i) {
@@ -378,6 +382,7 @@ struct sym_immutable_graph_tree_plus {
     auto starts = pbbs::pack_index<size_t>(start_im, fl);
     size_t num_starts = starts.size();
 
+    auto _bd_t2 = bd_now();  // breakdown: start of edge_struct phase
     // build new vertices for each start
     using KV = pair<uintV, edge_struct>;
     constexpr const size_t stack_size = 20;
@@ -410,8 +415,18 @@ struct sym_immutable_graph_tree_plus {
       return ret;
     };
 
+    auto _bd_t3 = bd_now();  // breakdown: start of tree_merge phase
     // Note that replace is only called if the element currently has a value.
     auto V_next = vertices_tree::multi_insert_sorted_with_values(V.root, new_verts, num_starts, replace, true, run_seq);
+    auto _bd_t4 = bd_now();  // breakdown: end of tree_merge phase
+
+    if (g_update_breakdown) {
+      g_update_breakdown->sort_ms        += bd_ms(_bd_t0, _bd_t1);
+      g_update_breakdown->preprocess_ms  += bd_ms(_bd_t1, _bd_t2);
+      g_update_breakdown->edge_struct_ms += bd_ms(_bd_t2, _bd_t3);
+      g_update_breakdown->tree_merge_ms  += bd_ms(_bd_t3, _bd_t4);
+      g_update_breakdown->count++;
+    }
 
     if (num_starts > stack_size) pbbs::free_array(new_verts);
     if (E_alloc) pbbs::free_array(E_alloc);
@@ -427,11 +442,13 @@ struct sym_immutable_graph_tree_plus {
     edge* E_alloc = nullptr;
     auto fl = run_seq ? pbbs::fl_sequential : pbbs::no_flag;
 
+    auto _bd_t0 = bd_now();  // breakdown: start of sort phase
     if (!sorted) {
       cout << "delete, nn = " << nn << endl;
       sort_updates(edges, m, nn);
     }
 
+    auto _bd_t1 = bd_now();  // breakdown: start of preprocess phase
     if (remove_dups) {
       auto bool_seq = pbbs::delayed_seq<bool>(E_orig.size(), [&] (size_t i) {
         return (i == 0 || E_orig[i] != E_orig[i-1]);
@@ -450,6 +467,7 @@ struct sym_immutable_graph_tree_plus {
     auto starts = pbbs::pack_index<size_t>(start_im, fl);
     size_t num_starts = starts.size();
 
+    auto _bd_t2 = bd_now();  // breakdown: start of edge_struct phase
     // build new vertices for each start
     using KV = pair<uintV, edge_struct>;
     constexpr const size_t stack_size = 20;
@@ -479,7 +497,18 @@ struct sym_immutable_graph_tree_plus {
 
       return ret;
     };
+
+    auto _bd_t3 = bd_now();  // breakdown: start of tree_merge phase
     auto V_next = vertices_tree::multi_insert_sorted_with_values(V.root, new_verts, num_starts, replace, true, run_seq); // TODO: run_seq
+    auto _bd_t4 = bd_now();  // breakdown: end of tree_merge phase
+
+    if (g_update_breakdown) {
+      g_update_breakdown->sort_ms        += bd_ms(_bd_t0, _bd_t1);
+      g_update_breakdown->preprocess_ms  += bd_ms(_bd_t1, _bd_t2);
+      g_update_breakdown->edge_struct_ms += bd_ms(_bd_t2, _bd_t3);
+      g_update_breakdown->tree_merge_ms  += bd_ms(_bd_t3, _bd_t4);
+      g_update_breakdown->count++;
+    }
 
     if (num_starts > stack_size) pbbs::free_array(new_verts);
     if (E_alloc) pbbs::free_array(E_alloc);
